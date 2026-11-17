@@ -10,6 +10,7 @@
 
 export type Tier = 'comparable' | 'early-access' | 'weak' | 'target-history' | 'unknown';
 export type Regime = 'rolling' | 'simultaneous' | 'unknown';
+export type PlatformFamily = 'console' | 'cross' | 'pc' | 'unknown';
 
 export interface KnownRow {
   hour: number;
@@ -92,6 +93,10 @@ export interface ComparableCurve {
   peakRatio: number | null;
   preLevel: number | null;
   dayStartMs: number;
+  /** log(hour1 / prelaunch level), null when the comparable has no prelaunch samples */
+  logHeat: number | null;
+  /** coarse platform class used by the compatibility ablation */
+  platform: 'console' | 'cross' | 'pc' | 'unknown';
 }
 
 /** Diagnostics kept for the LIVE app; never written to the graded .out file. */
@@ -126,4 +131,10 @@ export interface ForecastResult {
   totalWeight: number;
   usedFallback: boolean;
   widthMultiplier: number;
+  /** diagnostic: target hour-1 heat relative to its own prelaunch history (never affects the shipped weights) */
+  heat: number | null;
+  /** number of analogues that survived weighting */
+  nAnalogs: number;
+  /** number of comparables removed by the strictly-prequential release-date gate */
+  excludedFuture: number;
 }

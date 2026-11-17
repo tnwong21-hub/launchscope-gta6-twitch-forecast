@@ -1,7 +1,7 @@
 <div align="center">
 
 # LaunchScope
-### RAMQE · GTA VI Twitch Concurrent Viewer Forecast
+### RAMQE-1.0.0 · GTA VI Twitch Concurrent Viewer Forecast
 
 **Forecast the launch-day audience curve — hour by hour, with calibrated uncertainty.**
 
@@ -25,6 +25,8 @@ Estimate **Twitch concurrent viewers in the Grand Theft Auto VI category** for e
 
 LaunchScope's scored deliverable is the deterministic Node.js entrypoint [`main.ts`](main.ts). The separately developed LIVE research interface is not the competition scoring runtime.
 
+> **Status of this repository:** this is **local research**, not an official Make.fun result. No official practice score, final grade, prize, or leaderboard rank is claimed. The numbers below are reproducible local backtests on the supplied comparable launches; the four practice targets are withheld and were never used as labels or for tuning.
+
 ## Why LaunchScope
 
 - **Shape transfer, not guesswork:** comparable launches are normalized to their own hour-1 viewers; the ensemble transfers their observed hourly curve shape to the target checkpoint.
@@ -36,7 +38,7 @@ LaunchScope's scored deliverable is the deterministic Node.js entrypoint [`main.
 
 ## Quick start
 
-Requirements: **Node.js 22 or newer**. No `npm install` is needed.
+Requirements: **Node.js 22 or newer** (for native TypeScript type stripping). No `npm install` is needed.
 
 ```bash
 # Run the competition entrypoint with the grader's default directories:
@@ -50,23 +52,29 @@ node main.ts
 
 The program reads all `*.in` files in lexicographic filename order and writes one `<case-id>.out` file for each valid case. The default grader paths are `/input` and `/output`.
 
-### Run tests and research backtest
+### Run tests and the research backtest
 
 ```bash
-node --test test/*.test.mjs
+npm test
+
+# The backtest needs an explicit input case and an optional report path.
+# Direct invocation:
 node tools/backtest.ts /path/to/p00.in /tmp/launchscope-backtest.json
+
+# Equivalent npm form (everything after `--` is passed to the tool):
+npm run backtest -- /path/to/p00.in /tmp/launchscope-backtest.json
 ```
 
-The test suite covers schema parsing, output contract, model behavior, edge cases, determinism, and runtime constraints. The backtest is a local research diagnostic; it is not an official challenge score.
+The test suite covers schema parsing, output contract, model behavior, edge cases, determinism, and runtime constraints. The backtest is a local research diagnostic; it is not an official challenge score. Its two required arguments are the practice input case and the output report path; running it with no arguments prints a usage error rather than guessing a path.
 
 ## Model at a glance
 
-**RAMQE** (Regime-Aware Matched Quantile Ensemble) anchors the forecast to the observed hour-1 viewer count and estimates the subsequent hourly shape from weighted comparable launch curves.
+**RAMQE-1.0.0** (Regime-Aware Multi-Anchor Quantile Ensemble) anchors the forecast to the observed hour-1 viewer count and estimates the subsequent hourly shape from weighted comparable launch curves. This is the **published v1 algorithm**; the v2 ideas tested later were rejected and are kept only as disabled ablation switches.
 
 1. Parse and validate the case input.
 2. Build comparable launch curves as ratios to each launch's own hour-1 viewers.
-3. Weight comparables by research tier, unlock-regime compatibility, and log-scale similarity.
-4. Estimate a robust log-space centre from weighted median/mean blend.
+3. Weight comparables by research tier, unlock-regime compatibility, and log-scale hour-1 similarity.
+4. Estimate a robust log-space centre from a 0.6 weighted-median / 0.4 weighted-mean blend.
 5. Form calibrated quantile bands from weighted dispersion and validate the exact output contract.
 
 The full implementation rationale, equations, thresholds, and calibration notes are in [`MODEL-METHOD.md`](MODEL-METHOD.md).
@@ -76,12 +84,23 @@ The full implementation rationale, equations, thresholds, and calibration notes 
 | Document | What it contains |
 |---|---|
 | [Model method](MODEL-METHOD.md) | Target definition, feature construction, ensemble weights, quantiles, determinism and limitations |
-| [Backtest report](docs/evidence/backtest-report.md) | Leave-one-comparable-out protocol, benchmark results, ablations and calibration diagnostics |
+| [Backtest report](docs/evidence/backtest-report.md) | LOCO + strictly prequential temporal protocols, exact reproducible metrics, ablations, leakage policy |
 | [Practice data audit](docs/evidence/data-audit.md) | Input schema, known fields, comparable tiers and release-regime observations |
 
-### Backtest snapshot
+### Backtest snapshot (exact reproducible local numbers)
 
-On the 11 clean rolling-midnight console comparables, the local LOCO experiment reports **0.252 log-pinball loss** for RAMQE versus **0.363** for the house persistence baseline, with **0.901 empirical 90% interval coverage**. These are research results on the supplied comparable launches — **not an official practice-case score, a final grade, or a guarantee of future accuracy**. The live public leaderboard currently displays leading practice losses around `0.000001`; this local LOCO result is materially worse and is not directly comparable to an official entry score. LaunchScope is therefore **not yet demonstrated to be top-ranked or reward-competitive**. The rolling subset is small and tuning is in-sample on the comparable set; read the full report before interpreting the figures.
+Scored with the competition's log pinball loss over 37 usable comparables. The rolling subset is the 11 clean rolling-midnight console launches matching the target regime.
+
+| Protocol | House baseline (all 37 / rolling 11) | RAMQE-1.0.0 (all 37 / rolling 11) |
+|---|---|---|
+| LOCO (leave-one-out, all other comparables) | 0.929650 / 0.363046 | **0.395114 / 0.251989** |
+| Strictly prequential temporal holdout | 1.049189 / 0.413219 | **0.537588 / 0.304398** |
+
+RAMQE's empirical 90% interval coverage is 0.908 on all-37 LOCO and 0.901 on the rolling subset; the temporal holdout is 0.767. These are research results on the supplied comparable launches — **not an official practice-case score, a final grade, a leaderboard rank, or a guarantee of future accuracy**. Local practice losses well below these figures have been observed on the public leaderboard, so this entry is **not demonstrated to be top-ranked or reward-competitive**. Tuning is in-sample on the comparable set; read the full report before interpreting any figure.
+
+### Rejected v2 ablations
+
+The following were tested under the same leakage-safe protocol and **not shipped**: production release-date gating (LOCO 0.502487 vs 0.395114), hour-1 audience-heat similarity (0.399612 / 0.405980 vs 0.395114), platform affinity (0.399001 vs 0.395114), and log-ratio clipping (0.705747 vs 0.395114 — clearly harmful). Combined as shipped, v2 scored 0.761956 LOCO and 0.846343 temporal. The small temporal differences for heat/platform are not a demonstrated gain on the published LOCO benchmark. All these switches remain **off** in production.
 
 ## Input and output contract
 
@@ -101,9 +120,8 @@ See [`src/contract.ts`](src/contract.ts) for executable validation and [`docs/ev
 ├── main.ts                 # Competition entrypoint and filesystem boundary
 ├── src/                    # Parser, types, comparable curves, RAMQE model, contract
 ├── test/                   # Dependency-free Node.js test suite
-├── tools/backtest.ts       # Leave-one-comparable-out research backtest
+├── tools/backtest.ts       # LOCO + temporal research backtest
 ├── docs/evidence/          # Reproducible research notes and data audit
-├── .github/workflows/      # Automated quality checks
 ├── MODEL-METHOD.md         # Full model specification
 ├── package.json            # Runtime metadata and npm scripts
 └── LICENSE                 # MIT License
@@ -113,16 +131,18 @@ See [`src/contract.ts`](src/contract.ts) for executable validation and [`docs/ev
 
 - The scoring entrypoint and `src/` use Node.js built-ins only; the forecast core does not call external APIs or require network access.
 - Input files are sorted; model operations use stable ordering and no random sampling or wall-clock dependency.
-- Practice target answers are withheld in the local kit and are not used by the backtest.
+- The four practice launches' withheld targets are not used as labels, features, or tuning signals. They are not in the comparables list of any practice case.
+- Two leakage-safe protocols are reported: LOCO (all other comparables, matching the published benchmark) and a strictly prequential temporal holdout that applies an explicit per-pseudo-case date gate. That gate is **never** enabled in production.
 - The final case may include additional comparable launches; the model processes the comparables supplied in each input rather than relying on a hard-coded practice-case list.
 
 ## Limitations — read before relying on a forecast
 
-- The kit does not provide local practice reference answers or a local official scorer. No official score is claimed here.
-- The target-regime calibration subset contains only 11 clean rolling-midnight comparables. Its metrics are indicative, not universal.
-- The final target's minute-mean checkpoint and some practice comparable hourly averages are not perfectly identical measurement methods.
+- The kit provides no local practice reference answers and no local official scorer; no official score is claimed.
+- The target-regime calibration subset contains only 11 clean rolling-midnight comparables; its metrics are indicative, not universal.
+- The final target's minute-mean checkpoint and some practice comparable hourly averages are not identical measurement methods.
 - A release-day audience curve can be affected by platform availability, creator schedules, regional unlock timing, category configuration, and events not represented in historical analogues.
 - Forecast intervals quantify model uncertainty under the available evidence; they cannot guarantee coverage under a novel launch regime.
+- All configuration choices were selected in-sample on the comparable set; no out-of-sample official validation exists.
 
 ## License
 
@@ -132,10 +152,10 @@ Released under the [MIT License](LICENSE).
 
 <div align="center">
 
-**LaunchScope · RAMQE**
+**LaunchScope · RAMQE-1.0.0**
 
 *Measure the signal. Model the curve. Show the uncertainty.*
 
-<sub>Entered on [make.fun](https://make.fun/bounty/gta6-twitch-ccu-forecast-01) · AI agents build software for cash rewards</sub>
+<sub>Entered on [make.fun](https://make.fun/bounty/gta6-twitch-ccu-forecast-01) · AI agents build software for cash rewards · local research only, no official grade claimed</sub>
 
 </div>

@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { forecast, baselineQuantiles } from '../src/model.ts';
+import { forecast, baselineQuantiles, analogueWeight, weightedQuantile } from '../src/model.ts';
 import { parseCase } from '../src/case.ts';
 import { classifyTier, classifyRegime, buildCurves } from '../src/curves.ts';
-import { weightedQuantile } from '../src/model.ts';
+import { Z, LEVELS, QNORM, DEFAULT_CONFIG, MODEL_VERSION } from '../src/config.ts';
 
 const INPUT = '/home/sentinelx/makefun-agent/bounties/gta6-twitch-ccu-forecast-01-workspace/kit/unpacked/gta6-twitch-ccu-forecast-01-kit/input';
 const load = (id) => parseCase(JSON.parse(readFileSync(`${INPUT}/${id}.in`, 'utf8')), id).case;
@@ -84,4 +84,120 @@ test('empirical-quantile ablation stays valid', () => {
   const r = forecast(c, { quantileMethod: 'empirical' });
   assert.equal(r.hours.length, 23);
   for (const h of r.hours) for (let i = 1; i < 5; i++) assert.ok(h.q[i] >= h.q[i - 1]);
+});
+
+// ---- Regressions for the published-v1 restoration -------------------------
+// A corrupt 6-element Z emitted 6 quantiles; scoreCase drops any row whose q
+// length !== 5, so the house baseline silently scored 0.000000. A field-name
+// mismatch (curve.heat instead of curve.logHeat) produced NaN weights, zero
+// total weight and a silent collapse onto that baseline. These tests pin both.
+
+test('house-baseline Z has exactly five values aligned to LEVELS and QNORM', () => {
+  assert.equal(LEVELS.length, 5);
+  assert.equal(QNORM.length, 5);
+  assert.equal(Z.length, 5);
+  assert.deepEqual([...Z], [-1.645, -0.674, 0, 0.674, 1.645]);
+  assert.equal(baselineQuantiles(1000, 2).length, 5);
+  assert.equal(baselineQuantiles(1000, 24).length, 5);
+});
+
+test('production identity is RAMQE-1.0.0 with every v2 ablation off', () => {
+  assert.equal(MODEL_VERSION, 'RAMQE-1.0.0');
+  assert.equal(DEFAULT_CONFIG.heatMix, 0);
+  assert.equal(DEFAULT_CONFIG.platformMix, 0);
+  assert.equal(DEFAULT_CONFIG.logRatioClip, Infinity);
+  assert.equal(DEFAULT_CONFIG.maxDayStartMs, Infinity);
+});
+
+test('buildCurves always exposes a logHeat property that is finite or null', () => {
+  for (const id of ['p00', 'p01', 'p02', 'p03']) {
+    const curves = buildCurves(load(id).comparables);
+    assert.ok(curves.length > 0, id);
+    for (const curve of curves) {
+      assert.ok(Object.hasOwn(curve, 'logHeat'), `${id}/${curve.name}: logHeat property missing`);
+      assert.ok(
+        curve.logHeat === null || Number.isFinite(curve.logHeat),
+        `${id}/${curve.name}: logHeat=${curve.logHeat} is neither null nor finite`,
+      );
+    }
+  }
+  // A comparable with no prelaunch samples must yield null, never undefined/NaN.
+  const synthetic = [{
+    name: 'NoPrelaunch',
+    day_start: '2024-01-01T00:00:00Z',
+    unlock: 'Tier: comparable. Rolling midnight local.',
+    platforms: 'PS5',
+    source: 'regression-test',
+    hourly: [{ from: '2024-01-01T00:00:00Z', viewers: 100 }],
+  }];
+  const [curve] = buildCurves(synthetic);
+  assert.ok(curve);
+  assert.equal(Object.hasOwn(curve, 'logHeat'), true);
+  assert.equal(curve.logHeat, null);
+});
+
+test('missing heat diagnostics never zero all weights or silently fall back', () => {
+  const normal = forecast(load('p00'));
+  assert.equal(normal.usedFallback, false);
+  assert.ok(normal.nAnalogs > 0);
+  assert.ok(Number.isFinite(normal.totalWeight) && normal.totalWeight > 0);
+
+  // Strip every comparable's prelaunch history: buildCurve() must emit logHeat
+  // = null for all of them (a present, finite-or-null property).
+  const stripped = load('p00');
+  for (const comp of stripped.comparables) {
+    const ds = Date.parse(comp.day_start);
+    comp.hourly = comp.hourly.filter((p) => {
+      const t = Date.parse(p.from);
+      return Number.isFinite(t) && t >= ds && t < ds + 24 * 3_600_000;
+    });
+  }
+  for (const curve of buildCurves(stripped.comparables)) assert.equal(curve.logHeat, null);
+
+  // Enable the optional heat ablation: a missing diagnostic must degrade to a
+  // NEUTRAL factor (1), not NaN -> zero total weight -> house fallback.
+  const r = forecast(stripped, { heatMix: 0.25 });
+  assert.equal(r.usedFallback, false);
+  assert.ok(r.nAnalogs > 0);
+  assert.ok(Number.isFinite(r.totalWeight) && r.totalWeight > 0);
+  // Neutral heat means the forecast is unchanged from the production result.
+  assert.deepEqual(JSON.parse(JSON.stringify(r)), JSON.parse(JSON.stringify(normal)));
+});
+
+test('analogueWeight treats non-finite optional diagnostics as neutral', () => {
+  // Build a fully valid fixture: a clean comparable whose hour-1 anchor p1 is
+  // its OWN v1 (so the scale kernel is exactly 1) and whose regime matches the
+  // target (so every required field is valid and the weight is positive).
+  // Using p1=1000/target='rolling' here would let wScale/regime plunge the
+  // baseline below minWeight -> 0, failing for fixture reasons, not model ones.
+  const real = buildCurves(load('p00').comparables)
+    .find((c) => c.tier === 'comparable' && Number.isFinite(c.v1) && c.v1 > 0);
+  assert.ok(real, 'expected at least one clean comparable curve');
+  const curve = { ...real, logHeat: 0 };
+  const p1 = real.v1;
+  const target = real.regime;
+  const targetHeat = 0;
+  const cfgHeat = { ...DEFAULT_CONFIG, heatMix: 0.25 };
+  const cfgNoHeat = { ...DEFAULT_CONFIG, heatMix: 0 };
+
+  const baseline = analogueWeight(curve, p1, target, targetHeat, cfgHeat);
+  assert.ok(Number.isFinite(baseline) && baseline > 0, 'baseline must be a positive finite weight');
+
+  // With finite heat on both sides, the blended heat factor is exactly 1, so
+  // the heat-enabled weight equals the heat-free weight. This is the neutral
+  // reference; a broken guard would yield 0/NaN or silently fall back.
+  const neutral = analogueWeight(curve, p1, target, targetHeat, cfgNoHeat);
+  assert.ok(Number.isFinite(neutral) && neutral > 0);
+  assert.equal(baseline, neutral);
+
+  for (const bad of [NaN, Infinity, -Infinity]) {
+    // Non-finite curve/target diagnostics must degrade to that SAME neutral
+    // weight — never NaN, never zero (which would trigger the house fallback).
+    const badCurve = analogueWeight({ ...curve, logHeat: bad }, p1, target, targetHeat, cfgHeat);
+    assert.ok(Number.isFinite(badCurve) && badCurve > 0, `curve logHeat=${bad}`);
+    assert.equal(badCurve, neutral, `curve logHeat=${bad} must be neutral`);
+    const badTarget = analogueWeight(curve, p1, target, bad, cfgHeat);
+    assert.ok(Number.isFinite(badTarget) && badTarget > 0, `target heat=${bad}`);
+    assert.equal(badTarget, neutral, `target heat=${bad} must be neutral`);
+  }
 });

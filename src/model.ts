@@ -1,24 +1,30 @@
 /**
- * RAMQE — Regime-Aware Multi-Anchor Quantile Ensemble (core, deterministic).
+ * RAMQE-1.0.0 — Regime-Aware Multi-Anchor Quantile Ensemble (pure core).
  *
- * For the target case we observe only hour 1's print p1. For each comparable
- * launch we already know its whole release-day curve, so we express it as a
- * ratio to its own hour 1. The median forecast is a robust, weighted blend of
- * those ratio curves in log space. Weights combine tier quality, unlock-regime
- * match with the target and log-scale similarity of hour-1 counts. The band is
- * sized from the weighted cross-sectional dispersion of the same log ratios;
- * its global multiplier is calibrated out-of-fold by the backtest tool.
+ * The shipped production algorithm is the PUBLISHED v1 model. The target case
+ * reveals only hour 1's print p1. Every comparable supplies a full release-day
+ * curve, normalised to its own hour 1 as r_c(h). The median forecast is a
+ * robust weighted blend of those log ratios; the band is sized from the
+ * weighted cross-sectional dispersion at each hour. Weights combine tier
+ * quality, unlock-regime match and log-scale similarity of hour-1 counts.
  *
- * The function is pure: no I/O, no clock, no randomness. Identical input and
- * config always produce identical bytes.
+ * The leakage-safe LOCO backtest reproduces the published score (0.395114 all,
+ * 0.251989 rolling) with these defaults. A separate strictly prequential
+ * temporal holdout sets an explicit per-pseudo-case date gate; that gate is
+ * NEVER enabled in production (maxDayStartMs = Infinity).
+ *
+ * Three v2 ideas were added and ablation-tested in `tools/backtest.ts`, then
+ * REJECTED because they regressed the leakage-safe holdout: release-date
+ * gating in production, hour-1 audience-heat similarity and log-ratio
+ * clipping. They survive only as opt-in ablation switches, all OFF by default.
+ * Audience heat remains as a diagnostic field only.
+ *
+ * No clock, no randomness, no I/O: identical input + config -> identical bytes.
  */
 import type { Case, ComparableCurve, ComparableWeight, ForecastResult, HourForecast, Regime } from './types.ts';
-import { DEFAULT_CONFIG, LEVELS, MODEL_VERSION, Z, type ModelConfig } from './config.ts';
+import { DEFAULT_CONFIG, LEVELS, MODEL_VERSION, QNORM, Z, type ModelConfig } from './config.ts';
+import { audienceHeat, buildCurves, prelaunchLevel, targetRegime } from './curves.ts';
 import { p1Of } from './case.ts';
-import { buildCurves, targetRegime } from './curves.ts';
-
-/** precise standard-normal quantiles at LEVELS (Z in config.ts is only the house baseline's coarse copy) */
-const QNORM = [-1.6448536269514729, -0.6744897501960817, 0, 0.6744897501960817, 1.6448536269514729];
 
 type Pair = [number, number]; // [log-ratio, weight]
 
@@ -35,7 +41,7 @@ function weightedVar(pairs: Pair[]): number {
   return w > 0 ? s / w : 0;
 }
 
-/** Weighted quantile of value/weight pairs sorted ascending by value (linear-in-weight CDF). */
+/** Weighted quantile of value/weight pairs sorted ascending by value. */
 export function weightedQuantile(sorted: Pair[], tau: number): number {
   if (sorted.length === 0) return NaN;
   let total = 0;
@@ -60,18 +66,66 @@ function tierMultiplier(curve: ComparableCurve, cfg: ModelConfig): number {
   }
 }
 
-function comparableWeight(curve: ComparableCurve, p1: number, target: Regime, cfg: ModelConfig): number {
+/** Product of tier, release-regime, scale and (optionally) heat/platform factors. */
+export function analogueWeight(
+  curve: ComparableCurve,
+  p1: number,
+  target: Regime,
+  targetLogHeat: number | null,
+  cfg: ModelConfig,
+): number {
   const wTier = tierMultiplier(curve, cfg);
-  if (wTier <= 0 || curve.v1 <= 0) return 0;
+  if (wTier <= 0 || !(curve.v1 > 0)) return 0;
   const wRegime =
     target === 'unknown' || curve.regime === 'unknown'
       ? cfg.regimeUnknown
-      : curve.regime === target
-        ? cfg.regimeMatch
-        : cfg.regimeMismatch;
+      : curve.regime === target ? cfg.regimeMatch : cfg.regimeMismatch;
   const d = (Math.log(curve.v1) - Math.log(p1)) / cfg.scaleSigma;
   const wScale = Math.exp(-0.5 * d * d);
-  const w = wTier * wRegime * wScale;
+
+  // Heat is OPTIONAL and diagnostic by default (heatMix = 0). A missing or
+  // non-finite heat value MUST degrade to a NEUTRAL factor of 1, never to NaN
+  // or zero: a NaN weight here would zero out every comparable, drop total
+  // weight to 0 and silently collapse the forecast onto the house baseline —
+  // the exact field-name regression this guard exists to prevent.
+  let wHeat = 1;
+  if (cfg.heatMix > 0 && cfg.heatSigma > 0 &&
+      Number.isFinite(targetLogHeat) && Number.isFinite(curve.logHeat)) {
+    const dh = (curve.logHeat - targetLogHeat) / cfg.heatSigma;
+    const factor = Math.exp(-0.5 * dh * dh);
+    if (Number.isFinite(factor)) {
+      const blended = (1 - cfg.heatMix) + cfg.heatMix * factor;
+      // An optional factor must be EXACTLY neutral (1) whenever it is not a
+      // finite positive number: a NaN/zero here would zero every comparable,
+      // drop total weight to 0 and silently collapse onto the house baseline.
+      if (Number.isFinite(blended) && blended > 0) wHeat = blended;
+    }
+  }
+  let wPlatform = 1;
+  if (cfg.platformMix > 0 && cfg.platformMix <= 1) {
+    // Target is a console single-player release (GTA VI). PS/Xbox-only
+    // comparables are closest; cross-platform next; PC-first is weakest.
+    const affinity: Record<ComparableCurve['platform'], number> = {
+      console: 1, cross: 0.75, pc: 0.45, unknown: 0.6,
+    };
+    const aff = affinity[curve.platform];
+    if (Number.isFinite(aff)) {
+      const blended = (1 - cfg.platformMix) + cfg.platformMix * aff;
+      if (Number.isFinite(blended) && blended > 0) wPlatform = blended;
+    }
+  }
+
+  // Explicit neutrality guard: both optional factors are exactly 1 unless their
+  // switch is on and the supporting diagnostic is finite. No edge case (e.g. an
+  // unexpected platform label or a NaN slipping past the guards above) may turn
+  // a usable comparable into NaN and trigger the zero-weight fallback.
+  if (!Number.isFinite(wHeat)) wHeat = 1;
+  if (!Number.isFinite(wPlatform)) wPlatform = 1;
+
+  const w = wTier * wRegime * wScale * wHeat * wPlatform;
+  // Defensive final guard: no path may turn a usable comparable into NaN and
+  // thereby trigger the zero-weight fallback. Non-finite weights are dropped
+  // individually, never allowed to poison the aggregate.
   return Number.isFinite(w) && w >= cfg.minWeight ? w : 0;
 }
 
@@ -88,16 +142,34 @@ function clampPos(x: number): number {
   return Math.min(x, 1e9);
 }
 
+/** House/starter persistence baseline (RULES.txt "Baseline and prizes"). */
+export function baselineQuantiles(p1: number, hour: number): [number, number, number, number, number] {
+  const p = Math.max(1, p1);
+  const s = 0.15 * Math.sqrt(Math.max(1, hour - 1));
+  return Z.map((z) => Math.round(p * Math.exp(z * s) * 100) / 100) as [number, number, number, number, number];
+}
+
 export function forecast(c: Case, config: Partial<ModelConfig> = {}): ForecastResult {
   const cfg: ModelConfig = { ...DEFAULT_CONFIG, ...config };
   const p1 = p1Of(c);
   const regime = targetRegime(c.notes);
-  const curves = buildCurves(c.comparables);
+  const targetDayMs = Date.parse(c.day_start);
+  const clip = cfg.logRatioClip;
+
+  // The target's heat is derived solely from its own pre-checkpoint history.
+  const preTarget = prelaunchLevel([...c.history_hourly, ...c.history], 8);
+  const targetLogHeat = audienceHeat(p1, preTarget);
+
+  const all = buildCurves(c.comparables);
+  // STRICT TIMELINE GATE: never train on a comparable released after the target.
+  const cutoff = cfg.maxDayStartMs ?? (Number.isFinite(targetDayMs) ? targetDayMs : null);
+  const usable = cutoff === null ? all : all.filter((curve) => curve.dayStartMs < cutoff);
+  const excludedFuture = all.length - usable.length;
 
   const weighted: Array<{ curve: ComparableCurve; weight: number }> = [];
   let totalWeight = 0;
-  for (const curve of curves) {
-    const w = comparableWeight(curve, p1, regime, cfg);
+  for (const curve of usable) {
+    const w = analogueWeight(curve, p1, regime, targetLogHeat, cfg);
     if (w > 0) {
       weighted.push({ curve, weight: w });
       totalWeight += w;
@@ -121,11 +193,14 @@ export function forecast(c: Case, config: Partial<ModelConfig> = {}): ForecastRe
     const h = row.hour;
     if (!Number.isFinite(h) || h < 2 || h > 24) continue;
 
-    // pairs of (log ratio, weight) for comparables that actually sampled this hour
     const pairs: Pair[] = [];
     for (const { curve, weight } of weighted) {
       const r = curve.ratio[h - 1];
-      if (r !== null && Number.isFinite(r) && r > 0) pairs.push([Math.log(r), weight]);
+      if (r !== null && Number.isFinite(r) && r > 0) {
+        // Robust log-space clipping tames 100x+ late-unlock comparables.
+        const lr = Math.log(r);
+        pairs.push([Math.max(-clip, Math.min(clip, lr)), weight]);
+      }
     }
 
     if (pairs.length === 0 || totalWeight <= 0) {
@@ -133,13 +208,14 @@ export function forecast(c: Case, config: Partial<ModelConfig> = {}): ForecastRe
       continue;
     }
 
+    const sorted = [...pairs].sort((a, b) => a[0] - b[0]);
     const center =
-      cfg.medianBlend * weightedQuantile([...pairs].sort((a, b) => a[0] - b[0]), 0.5) +
+      cfg.medianBlend * weightedQuantile(sorted, 0.5) +
       (1 - cfg.medianBlend) * weightedMean(pairs);
 
     let logSpread: number;
     if (cfg.quantileMethod === 'empirical') {
-      logSpread = 0; // empirical path ignores the normal-size parameter
+      logSpread = 0;
     } else {
       const raw = Math.sqrt(Math.max(0, weightedVar(pairs)));
       logSpread = Math.min(cfg.sigmaCap, Math.max(cfg.sigmaFloor, cfg.widthMultiplier * raw));
@@ -147,9 +223,7 @@ export function forecast(c: Case, config: Partial<ModelConfig> = {}): ForecastRe
 
     let logs: number[];
     if (cfg.quantileMethod === 'empirical') {
-      const sorted = [...pairs].sort((a, b) => a[0] - b[0]);
       logs = LEVELS.map((tau) => weightedQuantile(sorted, tau));
-      // enforce a minimum non-zero width so a degenerate sample never gives zero-width bands
       const med = weightedQuantile(sorted, 0.5);
       logs = logs.map((v) => med + Math.max(-cfg.sigmaCap, Math.min(cfg.sigmaCap, v - med)));
     } else {
@@ -157,7 +231,6 @@ export function forecast(c: Case, config: Partial<ModelConfig> = {}): ForecastRe
     }
 
     const q = logs.map((v) => clampPos(p1 * Math.exp(v))) as [number, number, number, number, number];
-    // enforce monotone non-decreasing (numerical safety; theoretatically guaranteed)
     for (let i = 1; i < q.length; i++) if (q[i] < q[i - 1]) q[i] = q[i - 1];
     hours.push({ hour: h, q, medianRatio: Math.exp(center), logSpread, regime });
   }
@@ -173,12 +246,8 @@ export function forecast(c: Case, config: Partial<ModelConfig> = {}): ForecastRe
     totalWeight,
     usedFallback: totalWeight <= 0,
     widthMultiplier: cfg.widthMultiplier,
+    heat: targetLogHeat,
+    nAnalogs: weighted.length,
+    excludedFuture,
   };
-}
-
-/** House-baseline forecast, used as a comparison anchor in the backtest tool. */
-export function baselineQuantiles(p1: number, hour: number): [number, number, number, number, number] {
-  const p = Math.max(1, p1);
-  const s = 0.15 * Math.sqrt(Math.max(1, hour - 1));
-  return Z.map((z) => Math.round(p * Math.exp(z * s) * 100) / 100) as [number, number, number, number, number];
 }

@@ -3,12 +3,13 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "LaunchScope RAMQE: deterministic, offline-first Node.js forecaster for GTA VI Twitch category concurrent viewers.",
+  "description": "LaunchScope RAMQE-1.0.0: deterministic, offline-first Node.js forecaster for GTA VI Twitch category concurrent viewers.",
   "license": "MIT",
   "engines": { "node": ">=22" },
   "scripts": {
     "test": "node --test test/*.test.mjs",
-    "backtest": "node tools/backtest.ts"
+    "backtest": "node tools/backtest.ts",
+    "backtest:help": "node tools/backtest.ts --help"
   },
   "keywords": ["twitch", "concurrent-viewers", "forecasting", "quantile-regression", "grand-theft-auto-vi", "makefun", "time-series"]
 }
