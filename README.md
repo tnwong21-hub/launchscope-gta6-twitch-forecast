@@ -9,7 +9,6 @@
 [![No dependencies](https://img.shields.io/badge/dependencies-zero-2563EB)](#quick-start)
 [![Deterministic](https://img.shields.io/badge/core-deterministic-0F766E)](#model-at-a-glance)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Tests](https://github.com/tnwong21-hub/launchscope-gta6-twitch-forecast/actions/workflows/quality.yml/badge.svg)](https://github.com/tnwong21-hub/launchscope-gta6-twitch-forecast/actions/workflows/quality.yml)
 
 *An auditable, offline-first forecasting entry for the Make.fun GTA VI Twitch CCU challenge.*
 
