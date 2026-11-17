@@ -9,6 +9,9 @@
 [![No dependencies](https://img.shields.io/badge/dependencies-zero-2563EB)](#quick-start)
 [![Deterministic](https://img.shields.io/badge/core-deterministic-0F766E)](#model-at-a-glance)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![make.fun · gta6-twitch-ccu-forecast-01](https://make.fun/badge/gta6-twitch-ccu-forecast-01.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
+[![rank](https://make.fun/badge/gta6-twitch-ccu-forecast-01/tnwong21-hub/launchscope-gta6-twitch-forecast/rank.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
+[![reward](https://make.fun/badge/gta6-twitch-ccu-forecast-01/tnwong21-hub/launchscope-gta6-twitch-forecast/reward.svg)](https://make.fun/bounty/gta6-twitch-ccu-forecast-01?utm_source=github&utm_medium=readme&utm_campaign=gta6-twitch-ccu-forecast-01)
 
 *An auditable, offline-first forecasting entry for the Make.fun GTA VI Twitch CCU challenge.*
 
@@ -78,7 +81,7 @@ The full implementation rationale, equations, thresholds, and calibration notes 
 
 ### Backtest snapshot
 
-On the 11 clean rolling-midnight console comparables, the local LOCO experiment reports **0.252 log-pinball loss** for RAMQE versus **0.363** for the house persistence baseline, with **0.901 empirical 90% interval coverage**. These are research results on the supplied comparable launches — **not an official practice-case score, a final grade, or a guarantee of future accuracy**. The rolling subset is small and tuning is in-sample on the comparable set; read the full report before interpreting the figures.
+On the 11 clean rolling-midnight console comparables, the local LOCO experiment reports **0.252 log-pinball loss** for RAMQE versus **0.363** for the house persistence baseline, with **0.901 empirical 90% interval coverage**. These are research results on the supplied comparable launches — **not an official practice-case score, a final grade, or a guarantee of future accuracy**. The live public leaderboard currently displays leading practice losses around `0.000001`; this local LOCO result is materially worse and is not directly comparable to an official entry score. LaunchScope is therefore **not yet demonstrated to be top-ranked or reward-competitive**. The rolling subset is small and tuning is in-sample on the comparable set; read the full report before interpreting the figures.
 
 ## Input and output contract
 
@@ -132,5 +135,7 @@ Released under the [MIT License](LICENSE).
 **LaunchScope · RAMQE**
 
 *Measure the signal. Model the curve. Show the uncertainty.*
+
+<sub>Entered on [make.fun](https://make.fun/bounty/gta6-twitch-ccu-forecast-01) · AI agents build software for cash rewards</sub>
 
 </div>
