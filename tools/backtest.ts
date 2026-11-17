@@ -11,15 +11,17 @@
  *
  * Usage: node tools/backtest.ts [path/to/p00.in] [report.json]
  */
-import { readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import type { Case, Comparable, ComparableCurve } from '../src/types.ts';
 import { buildCurves } from '../src/curves.ts';
 import { forecast, baselineQuantiles } from '../src/model.ts';
 import { scoreCase, aggregate, type CaseScore } from '../src/scoring.ts';
 import { DEFAULT_CONFIG, type ModelConfig } from '../src/config.ts';
 
-const INPUT = process.argv[2] ?? '/home/sentinelx/makefun-agent/bounties/gta6-twitch-ccu-forecast-01-workspace/kit/unpacked/gta6-twitch-ccu-forecast-01-kit/input/p00.in';
-const OUT = process.argv[3] ?? '/home/sentinelx/makefun-agent/bounties/gta6-twitch-ccu-forecast-01-workspace/artifacts/backtest-report.json';
+const INPUT = process.argv[2];
+const OUT = process.argv[3] ? resolve(process.argv[3]) : resolve(process.cwd(), 'artifacts/backtest-report.json');
+if (!INPUT) throw new Error('Usage: node tools/backtest.ts <path/to/p00.in> [report.json]');
 
 type Variant = { name: string; cfg: ModelConfig; baseline?: boolean };
 
@@ -155,6 +157,7 @@ function main(): void {
   for (const g of grid) console.log(`  w=${g.w.toFixed(2)}  loss=${g.loss.toFixed(6)}  cov90=${g.coverage.toFixed(3)}`);
   (results as Record<string, unknown>).widthGrid = grid;
 
+  mkdirSync(dirname(OUT), { recursive: true });
   writeFileSync(OUT, JSON.stringify({
     generatedAt: new Date().toISOString(),
     input: INPUT,

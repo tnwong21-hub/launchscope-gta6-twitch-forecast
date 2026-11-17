@@ -3,6 +3,12 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "description": "LaunchScope / RAMQE offline forecaster for the GTA6 Twitch CCU bounty (Node 22, stdlib only).",
-  "engines": { "node": ">=22" }
+  "description": "LaunchScope RAMQE: deterministic, offline-first Node.js forecaster for GTA VI Twitch category concurrent viewers.",
+  "license": "MIT",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "backtest": "node tools/backtest.ts"
+  },
+  "keywords": ["twitch", "concurrent-viewers", "forecasting", "quantile-regression", "grand-theft-auto-vi", "makefun", "time-series"]
 }
