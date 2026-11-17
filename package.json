@@ -1,0 +1,8 @@
+{
+  "name": "launchscope-ramqe",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "LaunchScope / RAMQE offline forecaster for the GTA6 Twitch CCU bounty (Node 22, stdlib only).",
+  "engines": { "node": ">=22" }
+}
