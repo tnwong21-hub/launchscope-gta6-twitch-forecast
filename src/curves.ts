@@ -1,22 +1,23 @@
 /**
  * Comparable release-day shape extraction (RAMQE-1.0.0).
  *
- * Every comparable carries an hourly curve from day_start-14d to day_start+3d.
- * We align it to its own UTC day_start, take hour 1 (offset 0) as the anchor and
- * express hours 1..24 as ratios to that anchor. Free-text unlock/platform
- * metadata is classified into a Tier, an unlock Regime and a platform family
- * with explicit, stable rules; unknown text degrades to 'unknown' rather than
- * being silently trusted.
+ * Each comparable carries an hourly curve from day_start-14d to day_start+3d.
+ * We align it to its own UTC day_start, take hour 1 (offset 0) as the anchor,
+ * and express hours 1..24 as ratios to that anchor. Free-text unlock and
+ * platform metadata is classified into a Tier, an unlock Regime and a platform
+ * family with explicit stable rules; unknown text degrades to 'unknown' rather
+ * than being silently trusted.
  *
- * `logHeat` = log(hour1 / prelaunch level) is a diagnostic feature. It is
- * computed only from information available at the checkpoint (the comparable's
- * own hour-1 print and its pre-release hours), so it never leaks a withheld
- * target. It does NOT affect the shipped weights (heatMix = 0 by default).
+ * `logHeat` = log(hour1 / prelaunch level) is a diagnostic feature. It uses
+ * only checkpoint-available information (the comparable's own hour-1 print and
+ * its pre-release hours), so it never leaks a withheld target. It does NOT
+ * affect the shipped weights: heatMix is 0 in the production configuration.
  */
 import type { Comparable, ComparableCurve, Regime, Tier, PlatformFamily } from './types.ts';
 
 const HOUR_MS = 3_600_000;
 
+/** Map a research Tier: label (with negation-safe free-text fallbacks) to a Tier. */
 export function classifyTier(unlock: string, name = ''): Tier {
   const t = `${unlock} ${name}`.toLowerCase();
   const m = /tier:\s*([a-z-]+)/.exec(t);
@@ -36,6 +37,7 @@ export function classifyTier(unlock: string, name = ''): Tier {
   return 'unknown';
 }
 
+/** Unlock-regime classification from free text. */
 export function classifyRegime(unlockOrNotes: string): Regime {
   const t = unlockOrNotes.toLowerCase();
   if (/midnight local|rolling/i.test(t)) return 'rolling';
@@ -74,16 +76,24 @@ export function audienceHeat(v1: number, preLevel: number | null): number | null
   return Number.isFinite(h) ? Math.max(-4, Math.min(4, h)) : null;
 }
 
+/**
+ * Extract one comparable's hour-1-normalised curve.
+ *
+ * A missing or non-positive hour-1 anchor makes the comparable unusable, in
+ * which case null is returned. Sampling is first-wins per offset so the result
+ * never depends on input ordering beyond the file's own order.
+ */
 export function buildCurve(c: Comparable): ComparableCurve | null {
   const ds = Date.parse(c.day_start);
   if (!Number.isFinite(ds)) return null;
+
   const byOffset = new Map<number, number>();
   for (const p of c.hourly) {
     if (p.viewers === null || !Number.isFinite(p.viewers) || p.viewers < 0) continue;
     const t = Date.parse(p.from);
     if (!Number.isFinite(t)) continue;
     const off = Math.round((t - ds) / HOUR_MS);
-    if (!byOffset.has(off)) byOffset.set(off, p.viewers); // first sample wins, deterministically
+    if (!byOffset.has(off)) byOffset.set(off, p.viewers);
   }
   const v1 = byOffset.get(0);
   if (v1 === undefined || v1 <= 0) return null;
@@ -108,7 +118,7 @@ export function buildCurve(c: Comparable): ComparableCurve | null {
     }
   }
 
-  // prelaunch level: up to 6 sampled hours in [-24,-1], median for robustness
+  // Prelaunch level: up to 6 sampled hours in [-24,-1], median for robustness.
   const pre: number[] = [];
   for (let off = -1; off >= -24 && pre.length < 8; off--) {
     const v = byOffset.get(off);
@@ -132,6 +142,7 @@ export function buildCurve(c: Comparable): ComparableCurve | null {
   };
 }
 
+/** Build every usable curve, sorted by release time then name. */
 export function buildCurves(comparables: Comparable[]): ComparableCurve[] {
   const out: ComparableCurve[] = [];
   for (const c of comparables) {
@@ -146,7 +157,10 @@ export function buildCurves(comparables: Comparable[]): ComparableCurve[] {
  * Last up-to-N pre-checkpoint viewers from the case's own history (sparse safe).
  * Used only for the target's heat diagnostic — never as a training label.
  */
-export function prelaunchLevel(history: Array<{ at?: string; from?: string; viewers: number | null }>, n = 8): number | null {
+export function prelaunchLevel(
+  history: Array<{ at?: string; from?: string; viewers: number | null }>,
+  n = 8,
+): number | null {
   const pts: Array<{ t: number; v: number }> = [];
   for (const p of history) {
     if (p.viewers === null || !Number.isFinite(p.viewers)) continue;

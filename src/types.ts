@@ -2,15 +2,18 @@
  * Shared types for the LaunchScope / RAMQE forecaster.
  *
  * These describe the official `makefun/twitch-ccu-case/v1` case shape and the
- * internal, richly-instrumented forecast object. The grader only ever sees the
+ * internal, richly-instrumented forecast object. The grader sees only the
  * compact `{hours:[{hour,q:[...]}]}` projection built in `contract.ts`.
- *
  * All types here are structural; runtime validation lives in `case.ts`.
  */
+
+// ---- Classification vocabularies -----------------------------------------
 
 export type Tier = 'comparable' | 'early-access' | 'weak' | 'target-history' | 'unknown';
 export type Regime = 'rolling' | 'simultaneous' | 'unknown';
 export type PlatformFamily = 'console' | 'cross' | 'pc' | 'unknown';
+
+// ---- Input shape ----------------------------------------------------------
 
 export interface KnownRow {
   hour: number;
@@ -80,6 +83,8 @@ export interface Case {
   notes: string;
 }
 
+// ---- Derived structures ---------------------------------------------------
+
 /** One extracted comparable release-day shape (see `curves.ts`). */
 export interface ComparableCurve {
   name: string;
@@ -131,7 +136,7 @@ export interface ForecastResult {
   totalWeight: number;
   usedFallback: boolean;
   widthMultiplier: number;
-  /** diagnostic: target hour-1 heat relative to its own prelaunch history (never affects the shipped weights) */
+  /** diagnostic: target hour-1 heat relative to its own prelaunch history */
   heat: number | null;
   /** number of analogues that survived weighting */
   nAnalogs: number;

@@ -12,8 +12,6 @@
  *    A pseudo-case for launch i may use ONLY launches 0..i-1, i.e. material
  *    that existed before that launch. The date gate is applied explicitly in
  *    `pseudoCase` for every pseudo-case; nothing from the future is consulted.
- *    This is the feature-selection gate: a feature is shipped only if it does
- *    not degrade temporal loss or coverage.
  *
  * The four practice launches are not in the comparables list; their withheld
  * targets are never read. No official grade is claimed.
@@ -54,7 +52,9 @@ if (process.argv[2] === '--help' || process.argv[2] === '-h') {
 }
 
 const INPUT = process.argv[2];
-const OUT = process.argv[3] ? resolve(process.argv[3]) : resolve(process.cwd(), 'artifacts/backtest-report.json');
+const OUT = process.argv[3]
+  ? resolve(process.argv[3])
+  : resolve(process.cwd(), 'artifacts/backtest-report.json');
 if (!INPUT) throw new Error(USAGE);
 
 const HOUR_MS = 3_600_000;
@@ -63,17 +63,17 @@ const cfg = (over: Partial<ModelConfig>): ModelConfig => ({ ...DEFAULT_CONFIG, .
 interface Variant {
   name: string;
   cfg: ModelConfig;
-  /** house/starter persistence baseline (not a model forecast) */
+  /** house/starter persistence baseline, not a model forecast */
   baseline?: boolean;
 }
 
 /**
- * The shipped production config (DEFAULT_CONFIG) already equals the published
- * v1 settings: heat/platform off, logRatioClip effectively infinite and
- * maxDayStartMs = Infinity so LOCO sees all peer comparables. `production` is
- * that default; it is the anchor that must reproduce the published 0.395114 /
- * 0.251989. The remaining variants are controlled, one-field ablations of the
- * rejected v2 ideas — documented, never used to tune the practice targets.
+ * The shipped production config already equals the published v1 settings:
+ * heat/platform off, logRatioClip effectively infinite and maxDayStartMs =
+ * Infinity so LOCO sees all peer comparables. `production_v1` is that default;
+ * it must reproduce the published 0.395114 / 0.251989. The remaining rows are
+ * controlled one-field ablations of the rejected v2 ideas — documented, never
+ * used to tune the practice targets.
  */
 const VARIANTS: Variant[] = [
   { name: 'house_baseline', cfg: DEFAULT_CONFIG, baseline: true },
@@ -84,14 +84,19 @@ const VARIANTS: Variant[] = [
   { name: 'v1_plus_heat0.75', cfg: cfg({ heatMix: 0.75, heatSigma: 0.6 }) },
   { name: 'v1_plus_platform0.5', cfg: cfg({ platformMix: 0.5 }) },
   { name: 'v1_plus_daygate', cfg: cfg({ maxDayStartMs: null }) },
-  // v2 as shipped: all rejected effects enabled together.
+  // All rejected v2 effects enabled together.
   {
     name: 'v2_as_shipped',
     cfg: cfg({ logRatioClip: 1.5, heatMix: 0.25, platformMix: 0.5, maxDayStartMs: null }),
   },
-  // Legacy parameter ablations (all with the shipped defaults otherwise).
+  // Legacy parameter ablations, each otherwise using the shipped defaults.
   { name: 'no_regime', cfg: cfg({ regimeMatch: 1, regimeMismatch: 1, regimeUnknown: 1 }) },
-  { name: 'no_tier', cfg: cfg({ tierWeight: { comparable: 1, weak: 1, early_access: 1, target_history: 0, unknown: 1 } }) },
+  {
+    name: 'no_tier',
+    cfg: cfg({
+      tierWeight: { comparable: 1, weak: 1, early_access: 1, target_history: 0, unknown: 1 },
+    }),
+  },
   { name: 'no_scale', cfg: cfg({ scaleSigma: 1e6 }) },
   { name: 'mean_only', cfg: cfg({ medianBlend: 0 }) },
   { name: 'median_only', cfg: cfg({ medianBlend: 1 }) },
@@ -103,11 +108,12 @@ const VARIANTS: Variant[] = [
 ];
 
 /**
- * Build a pseudo-case. `gate=true` (TEMPORAL only) restricts comparables to
- * those released strictly before the held launch. `gate=false` (LOCO) uses all
- * OTHER comparables regardless of date — exactly the published benchmark.
- * The production config's own date gate stays off; the temporal gate lives
- * here, in the backtest, never in the shipped model.
+ * Build a pseudo-case from one comparable's own curve.
+ *
+ * `gate=true` (TEMPORAL only) restricts peers to strictly earlier releases.
+ * `gate=false` (LOCO) uses all OTHER comparables regardless of date — exactly
+ * the published benchmark. The production config's own date gate stays off;
+ * the temporal gate lives here in the backtest, never in the shipped model.
  */
 function pseudoCase(curve: ComparableCurve, all: Comparable[], gate: boolean): Case {
   const own = all.find((c) => c.name === curve.name);
@@ -117,9 +123,11 @@ function pseudoCase(curve: ComparableCurve, all: Comparable[], gate: boolean): C
       return Number.isFinite(t) && t < curve.dayStartMs && p.viewers !== null;
     })
     .map((p) => ({ at: p.from, from: p.from, viewers: p.viewers }));
+
   const peers = gate
     ? all.filter((c) => c.day_start && Date.parse(c.day_start) < curve.dayStartMs)
     : all.filter((c) => c.name !== curve.name);
+
   const forecastRows = Array.from({ length: 23 }, (_, i) => ({ hour: i + 2 }));
   return {
     schema: 'makefun/twitch-ccu-case/v1',
@@ -150,13 +158,18 @@ function actualOf(curve: ComparableCurve): Map<number, number> {
 
 type Agg = ReturnType<typeof aggregate>;
 
-function runVariant(v: Variant, curves: ComparableCurve[], all: Comparable[], mode: 'loco' | 'temporal'): { scores: CaseScore[]; agg: Agg } {
+function runVariant(
+  v: Variant,
+  curves: ComparableCurve[],
+  all: Comparable[],
+  mode: 'loco' | 'temporal',
+): { scores: CaseScore[]; agg: Agg } {
   const scores: CaseScore[] = [];
   const chronological = [...curves].sort((a, b) => a.dayStartMs - b.dayStartMs);
   for (const held of curves) {
     if (mode === 'temporal') {
       const earlier = chronological.filter((c) => c.dayStartMs < held.dayStartMs);
-      if (earlier.length < 6) continue; // warm-up: too few predecessors to compare fairly
+      if (earlier.length < 6) continue; // warm-up: too few predecessors
     }
     // LOCO uses ALL other comparables; only TEMPORAL applies the date gate.
     const gate = mode === 'temporal';
@@ -179,13 +192,18 @@ function main(): void {
   const raw = JSON.parse(readFileSync(INPUT, 'utf8')) as { comparables: Comparable[] };
   const all = raw.comparables;
   const curves = buildCurves(all).filter((c) => c.tier !== 'target-history');
-  const rollingNames = new Set(curves.filter((c) => c.regime === 'rolling' && c.tier === 'comparable').map((c) => c.name));
+  const rollingNames = new Set(
+    curves.filter((c) => c.regime === 'rolling' && c.tier === 'comparable').map((c) => c.name),
+  );
   const cleanNames = new Set(curves.filter((c) => c.tier === 'comparable').map((c) => c.name));
 
   const results: Record<string, unknown> = {};
   for (const mode of ['loco', 'temporal'] as const) {
     console.log(`\n${mode.toUpperCase()} backtest over ${curves.length} comparables (practice targets withheld, unused)`);
-    console.log('variant'.padEnd(22), 'loss'.padStart(9), 'miss%'.padStart(8), 'cov90'.padStart(7), '|', 'roll.loss'.padStart(9), 'roll.miss'.padStart(8), 'roll.cov'.padStart(7));
+    console.log(
+      'variant'.padEnd(22), 'loss'.padStart(9), 'miss%'.padStart(8), 'cov90'.padStart(7), '|',
+      'roll.loss'.padStart(9), 'roll.miss'.padStart(8), 'roll.cov'.padStart(7),
+    );
     const modeResults: Record<string, unknown> = {};
     for (const v of VARIANTS) {
       const { scores, agg } = runVariant(v, curves, all, mode);
@@ -201,7 +219,12 @@ function main(): void {
         rollAgg.typicalMissPct.toFixed(1).padStart(8),
         rollAgg.coverage90.toFixed(3).padStart(7),
       );
-      modeResults[v.name] = { all: agg, rolling: rollAgg, clean: cleanAgg, perCase: scores.map((s) => ({ id: s.id, loss: s.loss, hours: s.hours.length })) };
+      modeResults[v.name] = {
+        all: agg,
+        rolling: rollAgg,
+        clean: cleanAgg,
+        perCase: scores.map((s) => ({ id: s.id, loss: s.loss, hours: s.hours.length })),
+      };
     }
     results[mode] = modeResults;
   }
@@ -212,7 +235,8 @@ function main(): void {
     input: INPUT,
     nComparables: curves.length,
     nRollingClean: rollingNames.size,
-    protocol: 'LOCO (leave-one-out, all other comparables, matches published benchmark) and strictly prequential temporal holdout (explicit per-pseudo-case date gate); practice targets withheld and unused; local research, not an official grade',
+    protocol:
+      'LOCO (leave-one-out, all other comparables, matches published benchmark) and strictly prequential temporal holdout (explicit per-pseudo-case date gate); practice targets withheld and unused; local research, not an official grade',
     results,
   }, null, 2) + '\n');
   console.log(`\nwrote ${OUT}`);

@@ -14,10 +14,10 @@
  * NEVER enabled in production (maxDayStartMs = Infinity).
  *
  * Three v2 ideas were added and ablation-tested in `tools/backtest.ts`, then
- * REJECTED because they regressed the leakage-safe holdout: release-date
- * gating in production, hour-1 audience-heat similarity and log-ratio
- * clipping. They survive only as opt-in ablation switches, all OFF by default.
- * Audience heat remains as a diagnostic field only.
+ * REJECTED because they regressed the leakage-safe holdout: production
+ * release-date gating, hour-1 audience-heat similarity and log-ratio clipping.
+ * They survive only as opt-in switches, all OFF by default. Audience heat
+ * remains a diagnostic field only.
  *
  * No clock, no randomness, no I/O: identical input + config -> identical bytes.
  */
@@ -26,18 +26,27 @@ import { DEFAULT_CONFIG, LEVELS, MODEL_VERSION, QNORM, Z, type ModelConfig } fro
 import { audienceHeat, buildCurves, prelaunchLevel, targetRegime } from './curves.ts';
 import { p1Of } from './case.ts';
 
-type Pair = [number, number]; // [log-ratio, weight]
+/** A log-ratio and its analogue weight. */
+type Pair = [number, number];
 
 function weightedMean(pairs: Pair[]): number {
-  let s = 0, w = 0;
-  for (const [v, wt] of pairs) { s += v * wt; w += wt; }
+  let s = 0;
+  let w = 0;
+  for (const [v, wt] of pairs) {
+    s += v * wt;
+    w += wt;
+  }
   return w > 0 ? s / w : 0;
 }
 
 function weightedVar(pairs: Pair[]): number {
   const m = weightedMean(pairs);
-  let s = 0, w = 0;
-  for (const [v, wt] of pairs) { s += wt * (v - m) ** 2; w += wt; }
+  let s = 0;
+  let w = 0;
+  for (const [v, wt] of pairs) {
+    s += wt * (v - m) ** 2;
+    w += wt;
+  }
   return w > 0 ? s / w : 0;
 }
 
@@ -76,18 +85,21 @@ export function analogueWeight(
 ): number {
   const wTier = tierMultiplier(curve, cfg);
   if (wTier <= 0 || !(curve.v1 > 0)) return 0;
+
   const wRegime =
     target === 'unknown' || curve.regime === 'unknown'
       ? cfg.regimeUnknown
       : curve.regime === target ? cfg.regimeMatch : cfg.regimeMismatch;
+
   const d = (Math.log(curve.v1) - Math.log(p1)) / cfg.scaleSigma;
   const wScale = Math.exp(-0.5 * d * d);
 
-  // Heat is OPTIONAL and diagnostic by default (heatMix = 0). A missing or
-  // non-finite heat value MUST degrade to a NEUTRAL factor of 1, never to NaN
-  // or zero: a NaN weight here would zero out every comparable, drop total
-  // weight to 0 and silently collapse the forecast onto the house baseline —
-  // the exact field-name regression this guard exists to prevent.
+  /*
+   * Heat is OPTIONAL and diagnostic by default (heatMix = 0). A missing or
+   * non-finite heat value MUST degrade to a NEUTRAL factor of 1, never to NaN
+   * or zero: a NaN weight here would zero out every comparable, drop total
+   * weight to 0 and silently collapse the forecast onto the house baseline.
+   */
   let wHeat = 1;
   if (cfg.heatMix > 0 && cfg.heatSigma > 0 &&
       Number.isFinite(targetLogHeat) && Number.isFinite(curve.logHeat)) {
@@ -95,16 +107,14 @@ export function analogueWeight(
     const factor = Math.exp(-0.5 * dh * dh);
     if (Number.isFinite(factor)) {
       const blended = (1 - cfg.heatMix) + cfg.heatMix * factor;
-      // An optional factor must be EXACTLY neutral (1) whenever it is not a
-      // finite positive number: a NaN/zero here would zero every comparable,
-      // drop total weight to 0 and silently collapse onto the house baseline.
       if (Number.isFinite(blended) && blended > 0) wHeat = blended;
     }
   }
+
   let wPlatform = 1;
   if (cfg.platformMix > 0 && cfg.platformMix <= 1) {
-    // Target is a console single-player release (GTA VI). PS/Xbox-only
-    // comparables are closest; cross-platform next; PC-first is weakest.
+    // Target is a console single-player release (GTA VI): PS/Xbox-only is
+    // closest, cross-platform next, PC-first weakest.
     const affinity: Record<ComparableCurve['platform'], number> = {
       console: 1, cross: 0.75, pc: 0.45, unknown: 0.6,
     };
@@ -115,18 +125,21 @@ export function analogueWeight(
     }
   }
 
-  // Explicit neutrality guard: both optional factors are exactly 1 unless their
-  // switch is on and the supporting diagnostic is finite. No edge case (e.g. an
-  // unexpected platform label or a NaN slipping past the guards above) may turn
-  // a usable comparable into NaN and trigger the zero-weight fallback.
+  // Explicit neutrality guard: optional factors are exactly 1 unless their
+  // switch is on and the supporting diagnostic is finite. No edge case may
+  // turn a usable comparable into NaN and trigger the zero-weight fallback.
   if (!Number.isFinite(wHeat)) wHeat = 1;
   if (!Number.isFinite(wPlatform)) wPlatform = 1;
 
   const w = wTier * wRegime * wScale * wHeat * wPlatform;
-  // Defensive final guard: no path may turn a usable comparable into NaN and
-  // thereby trigger the zero-weight fallback. Non-finite weights are dropped
-  // individually, never allowed to poison the aggregate.
+  // Non-finite weights are dropped individually, never allowed to poison the
+  // aggregate; a final minWeight floor keeps tiny numerical dust out.
   return Number.isFinite(w) && w >= cfg.minWeight ? w : 0;
+}
+
+function clampPos(x: number): number {
+  if (!Number.isFinite(x) || x <= 0) return 1e-6;
+  return Math.min(x, 1e9);
 }
 
 function fallbackRow(hour: number, p1: number, cfg: ModelConfig): HourForecast {
@@ -137,16 +150,29 @@ function fallbackRow(hour: number, p1: number, cfg: ModelConfig): HourForecast {
   return { hour, q, medianRatio: 1, logSpread: s, regime: 'unknown' };
 }
 
-function clampPos(x: number): number {
-  if (!Number.isFinite(x) || x <= 0) return 1e-6;
-  return Math.min(x, 1e9);
-}
-
-/** House/starter persistence baseline (RULES.txt "Baseline and prizes"). */
+/** House/starter persistence baseline (RULES.txt, "Baseline and prizes"). */
 export function baselineQuantiles(p1: number, hour: number): [number, number, number, number, number] {
   const p = Math.max(1, p1);
   const s = 0.15 * Math.sqrt(Math.max(1, hour - 1));
   return Z.map((z) => Math.round(p * Math.exp(z * s) * 100) / 100) as [number, number, number, number, number];
+}
+
+/** Collect finite, positive log ratios for one forecast hour. */
+function hourPairs(
+  weighted: Array<{ curve: ComparableCurve; weight: number }>,
+  hour: number,
+  clip: number,
+): Pair[] {
+  const pairs: Pair[] = [];
+  for (const { curve, weight } of weighted) {
+    const r = curve.ratio[hour - 1];
+    if (r !== null && Number.isFinite(r) && r > 0) {
+      // Robust log-space clipping tames 100x+ late-unlock comparables.
+      const lr = Math.log(r);
+      pairs.push([Math.max(-clip, Math.min(clip, lr)), weight]);
+    }
+  }
+  return pairs;
 }
 
 export function forecast(c: Case, config: Partial<ModelConfig> = {}): ForecastResult {
@@ -193,16 +219,7 @@ export function forecast(c: Case, config: Partial<ModelConfig> = {}): ForecastRe
     const h = row.hour;
     if (!Number.isFinite(h) || h < 2 || h > 24) continue;
 
-    const pairs: Pair[] = [];
-    for (const { curve, weight } of weighted) {
-      const r = curve.ratio[h - 1];
-      if (r !== null && Number.isFinite(r) && r > 0) {
-        // Robust log-space clipping tames 100x+ late-unlock comparables.
-        const lr = Math.log(r);
-        pairs.push([Math.max(-clip, Math.min(clip, lr)), weight]);
-      }
-    }
-
+    const pairs = hourPairs(weighted, h, clip);
     if (pairs.length === 0 || totalWeight <= 0) {
       hours.push(fallbackRow(h, p1, cfg));
       continue;

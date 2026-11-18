@@ -3,14 +3,14 @@
  *
  *   node /bot/main.ts              (Node 22, standard library only, no network)
  *
- * The grader runs one case per sandbox: it mounts that case at /input and reads
- * one forecast file from /output. For local replay we handle every *.in file in
- * $MAKEFUN_INPUT_DIR (else /input), in stable filename order, and emit exactly
- * one <id>.out per case into $MAKEFUN_OUTPUT_DIR (else /output).
+ * One case per sandbox: the grader mounts a case at /input and reads one
+ * forecast file from /output. For local replay this program scans every *.in
+ * file in $MAKEFUN_INPUT_DIR (default /input) in stable filename order and
+ * writes one <id>.out per valid case into $MAKEFUN_OUTPUT_DIR (default /output).
  *
  * The scoring core is pure: no clock, no randomness, no network, and no I/O
- * beyond those two directories. Diagnostics go to stderr only, so stdout and
- * the output files remain machine-readable.
+ * beyond those two directories. Diagnostics are stderr-only so stdout and the
+ * emitted files stay machine-readable.
  */
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,8 +24,21 @@ const INPUT_DIR = process.env.MAKEFUN_INPUT_DIR ?? '/input';
 const OUTPUT_DIR = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
 const MAX_INPUT_BYTES = 64 * 1024 * 1024;
 
+interface CaseRun {
+  id: string;
+  text: string;
+  bytes: number;
+  hours: number;
+}
+
 function diagnostics(...args: unknown[]): void {
   console.error('[launchscope]', ...args);
+}
+
+/** Uniform skip report: a skipped case never produces an output file. */
+function skip(filename: string, reason: string): null {
+  diagnostics(`skip ${filename}: ${reason}`);
+  return null;
 }
 
 /** Stable filename order makes a multi-case local replay deterministic. */
@@ -38,58 +51,46 @@ function inputFiles(dir: string): string[] {
   return names.sort((a, b) => a.localeCompare(b, 'en'));
 }
 
-interface CaseRun {
-  id: string;
-  case: Case;
-  text: string;
-  bytes: number;
-  hours: number;
-}
-
 /**
- * Parse, forecast and serialise one case.
+ * Parse, forecast and validate one case.
  *
- * Input is untrusted: malformed JSON, missing fields and partial cases are all
+ * Input is untrusted: malformed JSON, missing fields and partial cases are
  * expected. Any failure is reported on stderr and the case is SKIPPED — no
- * output file is written for it and no exception escapes to main. This keeps
- * the process exit status clean and guarantees that every file we do emit has
- * passed the exact graded contract.
+ * output file is written and no exception escapes. This keeps the process exit
+ * status clean and guarantees that every emitted file passed the exact graded
+ * contract.
  */
 function runOne(filename: string): CaseRun | null {
   const path = join(INPUT_DIR, filename);
   try {
     const stat = statSync(path);
     if (!stat.isFile() || stat.size > MAX_INPUT_BYTES) {
-      diagnostics(`skip ${filename}: not a regular file or larger than ${MAX_INPUT_BYTES} bytes`);
-      return null;
+      return skip(filename, `not a regular file or larger than ${MAX_INPUT_BYTES} bytes`);
     }
 
     let raw: unknown;
     try {
       raw = JSON.parse(readFileSync(path, 'utf8')) as unknown;
     } catch (err) {
-      diagnostics(`skip ${filename}: malformed JSON (${(err as Error).message})`);
-      return null;
+      return skip(filename, `malformed JSON (${(err as Error).message})`);
     }
 
     const parsed = parseCase(raw, filename.replace(/\.in$/i, ''));
     if (!parsed.case) {
-      diagnostics(`skip ${filename}: unusable case (${parsed.errors.join('; ')})`);
-      return null;
+      return skip(filename, `unusable case (${parsed.errors.join('; ')})`);
     }
-    const c = parsed.case;
+    const c: Case = parsed.case;
+
     const text = serialize(forecast(c));
-    // The graded contract is always the fixed 23 rows for hours 2..24,
-    // independent of whatever a (possibly partial) input case claimed.
+    // The graded shape is always the fixed 23 rows for hours 2..24,
+    // independent of what a (possibly partial) input case claimed.
     const check = validateContract(text, defaultHours());
     if (!check.ok) {
-      diagnostics(`skip ${filename}: contract violation (${check.errors.join('; ')})`);
-      return null;
+      return skip(filename, `contract violation (${check.errors.join('; ')})`);
     }
-    return { id: c.id, case: c, text, bytes: check.bytes, hours: c.forecast.length };
+    return { id: c.id, text, bytes: check.bytes, hours: c.forecast.length };
   } catch (err) {
-    diagnostics(`skip ${filename}: unexpected error (${(err as Error).message})`);
-    return null;
+    return skip(filename, `unexpected error (${(err as Error).message})`);
   }
 }
 
